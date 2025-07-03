@@ -1,0 +1,176 @@
+# Nginx Deployment and LoadBalancer Service for Azure Kubernetes Service (AKS)
+# This manifest creates a simple nginx web server pod exposed through a LoadBalancer service
+# Optimized for Azure cloud environment with proper resource limits and security considerations
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-web-server
+  labels:
+    app: nginx
+    environment: production
+spec:
+  replicas: 3  # Multiple replicas for high availability
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine  # Using alpine for smaller footprint and better security
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        # Resource limits for cost optimization and performance predictability
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "1000m"
+        # Health checks for better reliability
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        # Security context for enhanced security posture
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101  # nginx user
+          capabilities:
+            drop:
+            - ALL
+        # Volume mount for nginx cache (required for read-only root filesystem)
+        volumeMounts:
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-pid
+          mountPath: /var/run
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      # Volumes for nginx operation with read-only root filesystem
+      volumes:
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-pid
+        emptyDir: {}
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+      # Security context for the pod
+      securityContext:
+        fsGroup: 101
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+---
+# LoadBalancer Service to expose nginx deployment
+# In Azure AKS, this will create an Azure Load Balancer with a public IP
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-loadbalancer-service
+  labels:
+    app: nginx
+  annotations:
+    # Azure-specific annotations for LoadBalancer configuration
+    service.beta.kubernetes.io/azure-load-balancer-internal: "false"  # Public load balancer
+    service.beta.kubernetes.io/azure-dns-label-name: "nginx-web-app"  # DNS label for the public IP
+    # Uncomment the following for internal load balancer:
+    # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    # service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "default"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: nginx
+  # Session affinity for better user experience (optional)
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+
+---
+# Custom nginx configuration to run on non-privileged port 8080
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  labels:
+    app: nginx
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        keepalive_timeout 65;
+        types_hash_max_size 4096;
+
+        server {
+            listen 8080;
+            listen [::]:8080;
+            server_name localhost;
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+
+            location / {
+                try_files $uri $uri/ =404;
+            }
+
+            error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
+                root /usr/share/nginx/html;
+            }
+        }
+    }

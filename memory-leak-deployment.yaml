@@ -1,0 +1,190 @@
+# Memory Leak Test Application Deployment for Azure Kubernetes Service (AKS)
+# This manifest creates a Python application with configurable memory leak behavior
+# Optimized for Azure cloud environment with proper resource limits and monitoring
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-leak-app
+  labels:
+    app: memory-leak-app
+    environment: testing
+    component: load-testing
+spec:
+  replicas: 1  # Start with single replica for testing
+  selector:
+    matchLabels:
+      app: memory-leak-app
+  template:
+    metadata:
+      labels:
+        app: memory-leak-app
+      annotations:
+        # Azure monitoring annotations
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: memory-leak-app
+        # Replace with your Azure Container Registry URL
+        image: publicpelithne.azurecr.io/leakapp:v1
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        # Environment variables to control memory leak behavior
+        env:
+        - name: LEAK
+          value: "TRUE"  # Set to TRUE to enable memory leak
+        - name: LEAK_RATE
+          value: "5"      # MB per second allocation rate
+        - name: LEAK_INTERVAL
+          value: "1"      # Seconds between allocations
+        - name: MAX_MEMORY
+          value: "400"    # Maximum memory to allocate in MB
+        - name: PORT
+          value: "8080"
+        # Resource limits for testing resource constraints
+        resources:
+          requests:
+            memory: "100Mi"
+            cpu: "50m"
+          limits:
+            memory: "512Mi"  # Pod will be killed if it exceeds this
+            cpu: "200m"
+        # Health checks for reliability
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        # Security context for enhanced security
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          capabilities:
+            drop:
+            - ALL
+        # Volume mounts for writable directories (required for read-only root filesystem)
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: app-cache
+          mountPath: /home/appuser/.cache
+      # Volumes for temporary storage
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+      - name: app-cache
+        emptyDir: {}
+      # Security context for the pod
+      securityContext:
+        fsGroup: 1001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Node selection for specific testing scenarios (optional)
+      # nodeSelector:
+      #   kubernetes.io/arch: amd64
+
+---
+# Service to expose the memory leak application
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-leak-service
+  labels:
+    app: memory-leak-app
+  annotations:
+    # Azure Load Balancer configuration for internal access
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: memory-leak-app
+
+---
+# ConfigMap for easy configuration management
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memory-leak-config
+  labels:
+    app: memory-leak-app
+data:
+  # Default configuration values
+  leak-enabled: "FALSE"
+  leak-rate: "5"
+  leak-interval: "1"
+  max-memory: "400"
+  # Instructions for enabling memory leak
+  instructions: |
+    To enable memory leak behavior:
+    1. Update the LEAK environment variable to "TRUE" in the deployment
+    2. Adjust LEAK_RATE (MB/s) and MAX_MEMORY (MB) as needed
+    3. Apply the updated manifest: kubectl apply -f memory-leak-deployment.yaml
+    4. Monitor with: kubectl top pods -l app=memory-leak-app
+    5. Check metrics: curl http://<service-ip>/metrics
+
+---
+# Optional: Horizontal Pod Autoscaler for testing autoscaling behavior
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: memory-leak-hpa
+  labels:
+    app: memory-leak-app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: memory-leak-app
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60

@@ -1,0 +1,11 @@
+# Requirements for Memory Leak Test Application
+# Minimal dependencies for security and performance
+
+# System monitoring and process information
+psutil==5.9.8
+
+# HTTP server functionality is built-in (http.server)
+# JSON handling is built-in (json)
+# Threading is built-in (threading)
+# Logging is built-in (logging)
+# Signal handling is built-in (signal)
