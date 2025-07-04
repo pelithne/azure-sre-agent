@@ -1,5 +1,4 @@
-# Azure SRE Agent - Kubernetes Load Testing
-
+# Testing the Azure SRE Agent - 
 This repository contains tools for simulating errors and load testing in Azure Kubernetes Service (AKS) clusters.
 
 ## Projects
